@@ -19,14 +19,15 @@ KLogs Viewer is a lightweight, web-based application that allows you to view and
 
 ### Deploy with Helm
 ```bash
+# Add Helm repository
 helm repo add rogosprojects https://raw.githubusercontent.com/rogosprojects/helm/master
-
+# Update Helm repositories
 helm repo update
-
+# Install
 helm install klogs-viewer rogosprojects/klogs-viewer
 ```
 
-[Read the full chart documentation](./helm/README.md)
+[Read the full **Helm chart documentation** with default values.yaml](https://github.com/rogosprojects/helm/tree/master/klogs-viewer)
 
 ### Environment Variables
 
