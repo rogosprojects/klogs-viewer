@@ -6,6 +6,8 @@
 
 KLogs Viewer is a lightweight, web-based application that allows you to view and download Kubernetes pod logs directly in your browser. Designed for developers and operators who need quick access to container logs without using the command line.
 
+![](./doc/screen.png)
+
 ## ✨ Features
 
 - **Simple Web Interface**: Browse pods organized by labels
