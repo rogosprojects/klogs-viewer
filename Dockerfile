@@ -1,6 +1,7 @@
 # Use the official Golang image as the base image
 FROM golang:1.23-alpine AS builder
 
+ARG VERSION=development
 # Set the Current Working Directory inside the container
 WORKDIR /app
 
@@ -10,7 +11,7 @@ COPY go.mod go.sum main.go ./
 RUN go mod download
 
 # Build the Go app
-RUN go build -o main .
+RUN go build -o main -ldflags "-X Version=${VERSION}" .
 
 FROM alpine:latest
 

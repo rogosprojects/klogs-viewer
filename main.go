@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"html/template"
@@ -16,6 +15,10 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
+
+// Version is the current version of the application.
+// It will be overridden during build when using ldflags.
+var Version = "dev"
 
 // LogServer handles the serving of Kubernetes pod logs through HTTP endpoints
 type LogServer struct {
@@ -68,7 +71,7 @@ func newLogServer(namespace string, protected bool) (*LogServer, error) {
 	return &LogServer{clientset: clientset, namespace: namespace, protected: protected}, nil
 }
 
-const htmlTemplate = `
+var htmlTemplate = `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -96,7 +99,7 @@ const htmlTemplate = `
 			--shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05);
 			--radius: 8px;
 		}
-		
+
 		@media (prefers-color-scheme: dark) {
 			:root {
 				--bg-color: #111827;
@@ -107,13 +110,13 @@ const htmlTemplate = `
 				--terminated: #94a3b8; /* Lighter color for dark mode */
 			}
 		}
-		
+
 		* {
 			margin: 0;
 			padding: 0;
 			box-sizing: border-box;
 		}
-		
+
 		body {
 			font-family: 'Inter', system-ui, -apple-system, sans-serif;
 			background-color: var(--bg-color);
@@ -123,25 +126,24 @@ const htmlTemplate = `
 			max-width: 1440px;
 			margin: 0 auto;
 		}
-		
+
 		.header {
 			margin-bottom: 2rem;
 			padding-bottom: 1rem;
 			border-bottom: 1px solid var(--border-color);
 		}
-		
+
 		.header h1 {
 			font-size: 1.875rem;
 			font-weight: 700;
 			margin-bottom: 0.5rem;
 			color: var(--primary);
 		}
-		
+
 		.header p {
 			color: var(--text-secondary);
-			max-width: 60ch;
 		}
-		
+
 		.status-badges {
 			display: flex;
 			flex-wrap: wrap;
@@ -149,7 +151,7 @@ const htmlTemplate = `
 			margin-top: 1.5rem;
 			margin-bottom: 2rem;
 		}
-		
+
 		.status-badge {
 			display: flex;
 			align-items: center;
@@ -158,7 +160,7 @@ const htmlTemplate = `
 			font-size: 0.875rem;
 			font-weight: 500;
 		}
-		
+
 		.status-badge::before {
 			content: '';
 			display: inline-block;
@@ -167,31 +169,31 @@ const htmlTemplate = `
 			border-radius: 50%;
 			margin-right: 0.5rem;
 		}
-		
+
 		.status-badge.running { background-color: rgba(16, 185, 129, 0.1); color: var(--running); }
 		.status-badge.running::before { background-color: var(--running); }
-		
+
 		.status-badge.pending { background-color: rgba(245, 158, 11, 0.1); color: var(--pending); }
 		.status-badge.pending::before { background-color: var(--pending); }
-		
+
 		.status-badge.failed { background-color: rgba(239, 68, 68, 0.1); color: var(--failed); }
 		.status-badge.failed::before { background-color: var(--failed); }
-		
+
 		.status-badge.unknown { background-color: rgba(107, 114, 128, 0.1); color: var(--unknown); }
 		.status-badge.unknown::before { background-color: var(--unknown); }
-		
+
 		.status-badge.succeeded { background-color: rgba(6, 182, 212, 0.1); color: var(--succeeded); }
 		.status-badge.succeeded::before { background-color: var(--succeeded); }
-		
+
 		.status-badge.terminated { background-color: rgba(31, 41, 55, 0.1); color: var(--terminated); }
 		.status-badge.terminated::before { background-color: var(--terminated); }
-		
+
 		.label-container {
 			display: grid;
 			grid-template-columns: repeat(auto-fill, minmax(min(100%, 30rem), 1fr));
 			gap: 2rem;
 		}
-		
+
 		.label-section {
 			background: var(--card-bg);
 			border-radius: var(--radius);
@@ -199,7 +201,7 @@ const htmlTemplate = `
 			overflow: hidden;
 			border: 1px solid var(--border-color);
 		}
-		
+
 		.label-title {
 			padding: 1.25rem;
 			font-size: 1.25rem;
@@ -207,14 +209,14 @@ const htmlTemplate = `
 			background-color: rgba(59, 130, 246, 0.05);
 			border-bottom: 1px solid var(--border-color);
 		}
-		
+
 		.pod-grid {
 			display: grid;
 			grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
 			gap: 1rem;
 			padding: 1.25rem;
 		}
-		
+
 		.pod-item {
 			border-radius: var(--radius);
 			padding: 1.25rem;
@@ -226,7 +228,7 @@ const htmlTemplate = `
 			position: relative;
 			overflow: hidden;
 		}
-		
+
 		.pod-item::before {
 			content: '';
 			position: absolute;
@@ -235,25 +237,25 @@ const htmlTemplate = `
 			width: 0.25rem;
 			height: 100%;
 		}
-		
+
 		.pod-item.status-running::before { background-color: var(--running); }
 		.pod-item.status-pending::before { background-color: var(--pending); }
 		.pod-item.status-failed::before { background-color: var(--failed); }
 		.pod-item.status-unknown::before { background-color: var(--unknown); }
 		.pod-item.status-succeeded::before { background-color: var(--succeeded); }
 		.pod-item.status-terminated::before { background-color: var(--terminated); }
-		
+
 		.pod-item:hover {
 			transform: translateY(-2px);
 			box-shadow: var(--shadow);
 		}
-		
+
 		.pod-header {
 			display: flex;
 			flex-direction: column;
 			gap: 0.25rem;
 		}
-		
+
 		.pod-name {
 			font-weight: 600;
 			font-size: 1rem;
@@ -261,12 +263,12 @@ const htmlTemplate = `
 			overflow: hidden;
 			text-overflow: ellipsis;
 		}
-		
+
 		.pod-namespace {
 			font-size: 0.875rem;
 			color: var(--text-secondary);
 		}
-		
+
 		.pod-status-badge {
 			align-self: flex-start;
 			font-size: 0.75rem;
@@ -275,21 +277,21 @@ const htmlTemplate = `
 			font-weight: 500;
 			margin-top: 0.25rem;
 		}
-		
+
 		.status-running .pod-status-badge { background-color: rgba(16, 185, 129, 0.1); color: var(--running); }
 		.status-pending .pod-status-badge { background-color: rgba(245, 158, 11, 0.1); color: var(--pending); }
 		.status-failed .pod-status-badge { background-color: rgba(239, 68, 68, 0.1); color: var(--failed); }
 		.status-unknown .pod-status-badge { background-color: rgba(107, 114, 128, 0.1); color: var(--unknown); }
 		.status-succeeded .pod-status-badge { background-color: rgba(6, 182, 212, 0.1); color: var(--succeeded); }
 		.status-terminated .pod-status-badge { background-color: rgba(75, 85, 99, 0.1); color: var(--terminated); }
-		
+
 		.container-links {
 			display: flex;
 			flex-direction: column;
 			gap: 0.5rem;
 			margin-top: 0.5rem;
 		}
-		
+
 		.container-link {
 			display: inline-flex;
 			align-items: center;
@@ -302,32 +304,32 @@ const htmlTemplate = `
 			font-weight: 500;
 			transition: background-color 0.2s;
 		}
-		
+
 		.container-link:hover {
 			background-color: var(--primary-hover);
 		}
-		
+
 		.container-link::before {
 			content: '⬇';
 			margin-right: 0.5rem;
 			font-size: 0.75rem;
 		}
-		
+
 		.empty-state {
 			padding: 2rem;
 			text-align: center;
 			color: var(--text-secondary);
 		}
-		
+
 		@media (max-width: 768px) {
 			.label-container {
 				grid-template-columns: 1fr;
 			}
-			
+
 			.pod-grid {
 				grid-template-columns: 1fr;
 			}
-			
+
 			.status-badges {
 				flex-direction: column;
 				align-items: flex-start;
@@ -340,7 +342,7 @@ const htmlTemplate = `
 		<h1>KLogs Viewer</h1>
 		<p>View and download container logs directly from your browser. Select a container below to download its logs.</p>
 	</header>
-	
+
 	<div class="status-badges">
 		<div class="status-badge running">Running</div>
 		<div class="status-badge pending">Pending</div>
@@ -349,7 +351,7 @@ const htmlTemplate = `
 		<div class="status-badge succeeded">Succeeded</div>
 		<div class="status-badge terminated">Terminated</div>
 	</div>
-	
+
 	<div class="label-container">
 	{{range $label, $pods := .}}
 		<div class="label-section">
@@ -377,33 +379,12 @@ const htmlTemplate = `
 		</div>
 	{{end}}
 	</div>
+	<footer style="text-align: center; margin-top: 2rem; color: var(--text-secondary);">
+		<p>Application Version: ` + Version + `</p>
+	</footer>
 </body>
 </html>
 `
-
-// deprecated, use an environment variable instead
-func readLabelsFromFile(filePath string) ([]string, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var labels []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.TrimSpace(line) != "" {
-			labels = append(labels, line)
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	return labels, nil
-}
 
 func validateToken(token string) bool {
 
@@ -433,6 +414,9 @@ func (s *LogServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	token := r.URL.Query().Get("t")
+	if token == "" {
+		token = r.URL.Query().Get("token")
+	}
 	if s.protected {
 		if token == "" {
 			http.Error(w, "Missing token query parameter", http.StatusBadRequest)
@@ -443,6 +427,10 @@ func (s *LogServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
+	}
+
+	if s.namespace == "*" {
+		s.namespace = metav1.NamespaceAll // Use metav1.NamespaceAll to list pods across all namespaces
 	}
 
 	for _, label := range strings.Split(labels, ",") {

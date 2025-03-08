@@ -28,6 +28,7 @@ helm repo update
 # Install
 helm install klogs-viewer rogosprojects/klogs-viewer
 ```
+**Done!** Follow the post-installation message to discover the log page URL.
 
 [Read the full **Helm chart documentation** with default values.yaml](https://github.com/rogosprojects/helm/tree/master/klogs-viewer)
 
