@@ -11,7 +11,7 @@ COPY go.mod go.sum main.go ./
 RUN go mod download
 
 # Build the Go app
-RUN go build -o main -ldflags "-X Version=${VERSION}" .
+RUN go build -o main -ldflags="-X 'main.Version=${VERSION}'" .
 
 FROM alpine:latest
 
