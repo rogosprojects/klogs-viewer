@@ -532,7 +532,7 @@ func main() {
 	http.HandleFunc("/logs/", server.handleIndex)
 	http.HandleFunc("/logs/download/", server.handleLogs)
 
-	log.Printf("Server starting on :8080")
+	log.Printf("Server starting on: 8080")
 	log.Printf("Namespace: %s", namespace)
 	log.Print("Token protection: ", protected)
 
