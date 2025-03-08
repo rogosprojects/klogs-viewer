@@ -341,6 +341,9 @@ var htmlTemplate = `
 	<header class="header">
 		<h1>KLogs Viewer</h1>
 		<p>View and download container logs directly from your browser. Select a container below to download its logs.</p>
+		<div style="position: absolute; top: 1rem; right: 1rem; background-color: var(--primary); color: white; padding: 0.5rem 1rem; border-radius: 1rem; font-size: 0.875rem;">
+			v` + Version + `
+		</div>
 	</header>
 
 	<div class="status-badges">
@@ -380,7 +383,6 @@ var htmlTemplate = `
 	{{end}}
 	</div>
 	<footer style="text-align: center; margin-top: 2rem; color: var(--text-secondary);">
-		<p>Application Version: ` + Version + `</p>
 	</footer>
 </body>
 </html>
