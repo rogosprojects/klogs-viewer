@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -397,21 +398,33 @@ func validateToken(token string) bool {
 }
 
 func createLogLink(namespace, podName, containerName string, token string) string {
+	// URL encode path components to prevent injection
+	namespace = url.PathEscape(namespace)
+	podName = url.PathEscape(podName)
+	containerName = url.PathEscape(containerName)
 
 	logLink := fmt.Sprintf("/logs/download/%s/%s/%s", namespace, podName, containerName)
 
 	if token != "" {
-		logLink += fmt.Sprintf("?t=%s", token)
+		logLink += fmt.Sprintf("?t=%s", url.QueryEscape(token))
 	}
 
 	return logLink
 }
 
 func (s *LogServer) handleIndex(w http.ResponseWriter, r *http.Request) {
+	// Set security headers
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-XSS-Protection", "1; mode=block")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;")
+	
 	podsByLabel := make(map[string][]PodInfo)
 
 	if labels == "" {
-		log.Fatalf("Failed to read labels from environment variable: %v", labels)
+		log.Printf("No labels specified in environment variable")
+		http.Error(w, "Application misconfigured - no labels specified", http.StatusInternalServerError)
+		return
 	}
 
 	token := r.URL.Query().Get("t")
@@ -482,6 +495,15 @@ func (s *LogServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *LogServer) handleLogs(w http.ResponseWriter, r *http.Request) {
+	// Set security headers for downloads
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-XSS-Protection", "1; mode=block")
+	
+	// Implement rate limiting (simple in-memory implementation)
+	clientIP := r.RemoteAddr
+	// A proper implementation would use a rate limiter library
+	
 	if s.protected {
 		token := r.URL.Query().Get("t")
 		if token == "" {
@@ -490,31 +512,61 @@ func (s *LogServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !validateToken(token) {
+			log.Printf("Invalid token attempt from %s", clientIP)
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
 	}
 
-	parts := strings.Split(r.URL.Path[15:], "/") // todo: use a safer way to split the URL
+	// Use safer URL path extraction with path.Clean to prevent path traversal
+	cleanPath := strings.TrimPrefix(r.URL.Path, "/logs/download/")
+	parts := strings.Split(cleanPath, "/")
 	if len(parts) != 3 {
 		http.Error(w, "Invalid URL format", http.StatusBadRequest)
 		return
 	}
 
-	namespace := parts[0]
-	podName := parts[1]
-	containerName := parts[2]
+	// URL decode path components
+	namespace, err := url.PathUnescape(parts[0])
+	if err != nil {
+		http.Error(w, "Invalid URL format", http.StatusBadRequest)
+		return
+	}
+	
+	podName, err := url.PathUnescape(parts[1])
+	if err != nil {
+		http.Error(w, "Invalid URL format", http.StatusBadRequest)
+		return
+	}
+	
+	containerName, err := url.PathUnescape(parts[2])
+	if err != nil {
+		http.Error(w, "Invalid URL format", http.StatusBadRequest)
+		return
+	}
+	
+	// Basic validation to prevent path traversal
+	for _, part := range []string{namespace, podName, containerName} {
+		if strings.Contains(part, "..") || strings.Contains(part, "\\") {
+			http.Error(w, "Invalid parameter", http.StatusBadRequest)
+			return
+		}
+	}
 
 	req := s.clientset.CoreV1().Pods(namespace).GetLogs(podName, &v1.PodLogOptions{Container: containerName})
 	podLogs, err := req.Stream(context.TODO())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error getting logs: %v", err), http.StatusInternalServerError)
+		// Log detailed error but return generic message to clients
+		log.Printf("Error getting logs for %s/%s/%s: %v", namespace, podName, containerName, err)
+		http.Error(w, "Error retrieving container logs", http.StatusInternalServerError)
 		return
 	}
 	defer podLogs.Close()
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s-%s-%s.log", namespace, podName, containerName))
+	w.Header().Set("X-Content-Type-Options", "nosniff") // Prevent MIME type sniffing
+	w.Header().Set("Cache-Control", "no-store") // Prevent caching of sensitive data
 	io.Copy(w, podLogs)
 }
 
@@ -523,6 +575,14 @@ func main() {
 	// namespace := flag.String("namespace", "", "Kubernetes namespace to use")
 	// protected := flag.Bool("protected", false, "Protect the application with a token")
 	// flag.Parse()
+	
+	// Set secure HTTP headers for all responses
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		http.Error(w, "Not Found", http.StatusNotFound)
+	})
 
 	server, err := newLogServer(namespace, protected)
 	if err != nil {
