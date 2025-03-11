@@ -9,8 +9,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"golang.org/x/time/rate"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -21,11 +25,71 @@ import (
 // It will be overridden during build when using ldflags.
 var Version = "dev"
 
+// visitor represents a client with rate limiting information
+type visitor struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
+// RateLimiter manages rate limiting for clients by IP address
+type RateLimiter struct {
+	visitors map[string]*visitor
+	mu       sync.Mutex
+	// Configurable parameters for the rate limiter
+	rate  rate.Limit
+	burst int
+	ttl   time.Duration
+}
+
+// NewRateLimiter creates a new rate limiter with the specified rate and burst
+func NewRateLimiter(r rate.Limit, b int, ttl time.Duration) *RateLimiter {
+	return &RateLimiter{
+		visitors: make(map[string]*visitor),
+		rate:     r,
+		burst:    b,
+		ttl:      ttl,
+	}
+}
+
+// GetLimiter returns a rate limiter for the specified client IP
+func (rl *RateLimiter) GetLimiter(ip string) *rate.Limiter {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	v, exists := rl.visitors[ip]
+	if !exists {
+		// Create a new rate limiter for this client
+		limiter := rate.NewLimiter(rl.rate, rl.burst)
+		rl.visitors[ip] = &visitor{
+			limiter:  limiter,
+			lastSeen: time.Now(),
+		}
+		return limiter
+	}
+
+	// Update last seen time
+	v.lastSeen = time.Now()
+	return v.limiter
+}
+
+// CleanupVisitors removes visitors that haven't been seen for a while
+func (rl *RateLimiter) CleanupVisitors() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	for ip, v := range rl.visitors {
+		if time.Since(v.lastSeen) > rl.ttl {
+			delete(rl.visitors, ip)
+		}
+	}
+}
+
 // LogServer handles the serving of Kubernetes pod logs through HTTP endpoints
 type LogServer struct {
 	clientset *kubernetes.Clientset
 	namespace string
 	protected bool
+	limiter   *RateLimiter
 }
 
 // PodInfo holds information about a Kubernetes pod and its containers
@@ -43,11 +107,29 @@ type ContainerInfo struct {
 	LogLink string
 }
 
+// Configuration constants for rate limiting
+const (
+	// DefaultRateLimit is the default number of requests allowed per minute per IP
+	DefaultRateLimit = 10.0
+	// DefaultBurst is the default maximum burst size for requests
+	DefaultBurst = 20
+	// DefaultVisitorTTL is the default time-to-live for inactive visitors in the rate limiter
+	DefaultVisitorTTL = 60 // minutes
+	// DefaultCleanupInterval is how often we clean up inactive visitors
+	DefaultCleanupInterval = 60 // minutes
+)
+
 var validToken string
 var labels string
 var namespace string
 var protected bool
 var replaceLabel string
+
+// Rate limiting configuration
+var rateLimit float64
+var burst int
+var visitorTTL time.Duration
+var cleanupInterval time.Duration
 
 func init() {
 	validToken = os.Getenv("TOKEN")
@@ -56,6 +138,35 @@ func init() {
 	replaceLabel = os.Getenv("REPLACE_LABEL")
 
 	protected = len(validToken) > 0
+
+	// Initialize rate limiting configuration from environment variables
+	rateLimit = DefaultRateLimit
+	if val := os.Getenv("RATE_LIMIT"); val != "" {
+		if parsed, err := strconv.ParseFloat(val, 64); err == nil && parsed > 0 {
+			rateLimit = parsed
+		}
+	}
+
+	burst = DefaultBurst
+	if val := os.Getenv("RATE_BURST"); val != "" {
+		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
+			burst = parsed
+		}
+	}
+
+	visitorTTL = time.Duration(DefaultVisitorTTL) * time.Minute
+	if val := os.Getenv("VISITOR_TTL"); val != "" {
+		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
+			visitorTTL = time.Duration(parsed) * time.Minute
+		}
+	}
+
+	cleanupInterval = time.Duration(DefaultCleanupInterval) * time.Minute
+	if val := os.Getenv("CLEANUP_INTERVAL"); val != "" {
+		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
+			cleanupInterval = time.Duration(parsed) * time.Minute
+		}
+	}
 }
 
 func newLogServer(namespace string, protected bool) (*LogServer, error) {
@@ -69,7 +180,26 @@ func newLogServer(namespace string, protected bool) (*LogServer, error) {
 		return nil, err
 	}
 
-	return &LogServer{clientset: clientset, namespace: namespace, protected: protected}, nil
+	// Convert requests per minute to requests per second
+	requestsPerSecond := rate.Limit(rateLimit / 60.0)
+
+	// Create a rate limiter with the configured parameters
+	rateLimiter := NewRateLimiter(requestsPerSecond, burst, visitorTTL)
+
+	// Start a goroutine to cleanup old visitors based on the configured interval
+	go func() {
+		for {
+			time.Sleep(cleanupInterval)
+			rateLimiter.CleanupVisitors()
+		}
+	}()
+
+	return &LogServer{
+		clientset: clientset,
+		namespace: namespace,
+		protected: protected,
+		limiter:   rateLimiter,
+	}, nil
 }
 
 var htmlTemplate = `
@@ -418,7 +548,7 @@ func (s *LogServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-XSS-Protection", "1; mode=block")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;")
-	
+
 	podsByLabel := make(map[string][]PodInfo)
 
 	if labels == "" {
@@ -494,16 +624,45 @@ func (s *LogServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// rateLimit implements a middleware function for rate limiting
+func (s *LogServer) rateLimit(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Get the IP from the request
+		clientIP := r.RemoteAddr
+
+		// Get the X-Forwarded-For header in case this is behind a proxy
+		if forwardedFor := r.Header.Get("X-Forwarded-For"); forwardedFor != "" {
+			// Use the first IP in the chain
+			ips := strings.Split(forwardedFor, ",")
+			if len(ips) > 0 {
+				clientIP = strings.TrimSpace(ips[0])
+			}
+		}
+
+		// Get rate limiter for this client
+		limiter := s.limiter.GetLimiter(clientIP)
+
+		// Check if the request is allowed
+		if !limiter.Allow() {
+			log.Printf("Rate limit exceeded for IP: %s", clientIP)
+			w.Header().Set("Retry-After", "60") // Suggest client to retry after 60 seconds
+			http.Error(w, "Too many requests. Please try again later.", http.StatusTooManyRequests)
+			return
+		}
+
+		// Call the next handler if the request is allowed
+		next(w, r)
+	}
+}
+
 func (s *LogServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	// Set security headers for downloads
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-XSS-Protection", "1; mode=block")
-	
-	// Implement rate limiting (simple in-memory implementation)
+
 	clientIP := r.RemoteAddr
-	// A proper implementation would use a rate limiter library
-	
+
 	if s.protected {
 		token := r.URL.Query().Get("t")
 		if token == "" {
@@ -532,19 +691,19 @@ func (s *LogServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid URL format", http.StatusBadRequest)
 		return
 	}
-	
+
 	podName, err := url.PathUnescape(parts[1])
 	if err != nil {
 		http.Error(w, "Invalid URL format", http.StatusBadRequest)
 		return
 	}
-	
+
 	containerName, err := url.PathUnescape(parts[2])
 	if err != nil {
 		http.Error(w, "Invalid URL format", http.StatusBadRequest)
 		return
 	}
-	
+
 	// Basic validation to prevent path traversal
 	for _, part := range []string{namespace, podName, containerName} {
 		if strings.Contains(part, "..") || strings.Contains(part, "\\") {
@@ -566,7 +725,7 @@ func (s *LogServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s-%s-%s.log", namespace, podName, containerName))
 	w.Header().Set("X-Content-Type-Options", "nosniff") // Prevent MIME type sniffing
-	w.Header().Set("Cache-Control", "no-store") // Prevent caching of sensitive data
+	w.Header().Set("Cache-Control", "no-store")         // Prevent caching of sensitive data
 	io.Copy(w, podLogs)
 }
 
@@ -575,7 +734,7 @@ func main() {
 	// namespace := flag.String("namespace", "", "Kubernetes namespace to use")
 	// protected := flag.Bool("protected", false, "Protect the application with a token")
 	// flag.Parse()
-	
+
 	// Set secure HTTP headers for all responses
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -589,12 +748,14 @@ func main() {
 		log.Fatalf("Failed to create server: %v", err)
 	}
 
-	http.HandleFunc("/logs/", server.handleIndex)
-	http.HandleFunc("/logs/download/", server.handleLogs)
+	// Apply rate limiting to both endpoints
+	http.HandleFunc("/logs/", server.rateLimit(server.handleIndex))
+	http.HandleFunc("/logs/download/", server.rateLimit(server.handleLogs))
 
 	log.Printf("Server starting on: 8080")
 	log.Printf("Namespace: %s", namespace)
 	log.Print("Token protection: ", protected)
+	log.Printf("Rate limiting: %.1f requests per minute per IP with burst of %d", rateLimit, burst)
 
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }

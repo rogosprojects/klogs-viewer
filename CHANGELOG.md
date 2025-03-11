@@ -14,6 +14,14 @@ All notable changes to the KLogs Viewer project will be documented in this file.
 - Added IP logging for authentication failures
 - Added secure headers and cache control for log downloads
 - Created proper 404 handler with security headers
+### Rate limiting
+- Implemented rate limiting to protect against abuse
+- Added configurable rate limiting through environment variables:
+  - `RATE_LIMIT`: Requests allowed per minute per IP (default: 10)
+  - `RATE_BURST`: Maximum burst size (default: 20)
+  - `VISITOR_TTL`: Time to keep inactive clients in memory (default: 60 minutes)
+  - `CLEANUP_INTERVAL`: Frequency to clean up inactive clients (default: 60 minutes)
+- Added proper 429 Too Many Requests responses with Retry-After header
 
 ## [0.0.1] - 2025-03-11
 

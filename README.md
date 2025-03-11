@@ -41,6 +41,15 @@ helm install klogs-viewer rogosprojects/klogs-viewer
 | `TOKEN` | Optional authentication token | (none) |
 | `REPLACE_LABEL` | Custom label replacement pattern | `app=` |
 
+#### Rate Limiting Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `RATE_LIMIT` | Number of requests allowed per minute per IP | `10` |
+| `RATE_BURST` | Maximum burst size allowed | `20` |
+| `VISITOR_TTL` | Time (in minutes) to keep inactive clients in memory | `60` |
+| `CLEANUP_INTERVAL` | Frequency (in minutes) to clean up inactive clients | `60` |
+
 ## 🔒 Security
 
 When deploying to production, we recommend:
@@ -48,6 +57,7 @@ When deploying to production, we recommend:
 1. Setting the `TOKEN` environment variable for authentication
 2. Using a specific namespace rather than cluster-wide access
 3. Deploying behind an ingress with TLS
+4. Configuring appropriate rate limits for your expected traffic patterns
 
 
 ## 🛠️ Building from Source
