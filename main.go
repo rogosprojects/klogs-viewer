@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"html/template"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -518,13 +520,16 @@ var htmlTemplate = `
 </html>
 `
 
-func validateToken(token string) bool {
-
-	if token == validToken {
-		return true
+// compareTokens performs a constant-time token comparison to prevent timing attacks
+func compareTokens(a, b string) bool {
+	if len(a) != len(b) {
+		return false
 	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
 
-	return false
+func validateToken(token string) bool {
+	return compareTokens(token, validToken)
 }
 
 func createLogLink(namespace, podName, containerName string, token string) string {
@@ -543,6 +548,18 @@ func createLogLink(namespace, podName, containerName string, token string) strin
 }
 
 func (s *LogServer) handleIndex(w http.ResponseWriter, r *http.Request) {
+	// Validate HTTP method to only allow GET requests
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	// Handle both /logs and /logs/ paths consistently
+	if r.URL.Path != "/logs" && r.URL.Path != "/logs/" {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
 	// Set security headers
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -557,17 +574,28 @@ func (s *LogServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Track client IP for security logging
+	clientIP := r.RemoteAddr
+	if forwardedFor := r.Header.Get("X-Forwarded-For"); forwardedFor != "" {
+		ips := strings.Split(forwardedFor, ",")
+		if len(ips) > 0 {
+			clientIP = strings.TrimSpace(ips[0])
+		}
+	}
+
 	token := r.URL.Query().Get("t")
 	if token == "" {
 		token = r.URL.Query().Get("token")
 	}
 	if s.protected {
 		if token == "" {
+			log.Printf("Missing token attempt from %s", clientIP)
 			http.Error(w, "Missing token query parameter", http.StatusBadRequest)
 			return
 		}
 
 		if !validateToken(token) {
+			log.Printf("Invalid token attempt from %s for /logs endpoint", clientIP)
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
@@ -656,16 +684,31 @@ func (s *LogServer) rateLimit(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *LogServer) handleLogs(w http.ResponseWriter, r *http.Request) {
+	// Validate HTTP method to only allow GET requests
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	// Set security headers for downloads
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-XSS-Protection", "1; mode=block")
 
 	clientIP := r.RemoteAddr
+	// Get the X-Forwarded-For header in case this is behind a proxy
+	if forwardedFor := r.Header.Get("X-Forwarded-For"); forwardedFor != "" {
+		// Use the first IP in the chain
+		ips := strings.Split(forwardedFor, ",")
+		if len(ips) > 0 {
+			clientIP = strings.TrimSpace(ips[0])
+		}
+	}
 
 	if s.protected {
 		token := r.URL.Query().Get("t")
 		if token == "" {
+			log.Printf("Missing token attempt from %s", clientIP)
 			http.Error(w, "Missing token query parameter", http.StatusBadRequest)
 			return
 		}
@@ -678,7 +721,7 @@ func (s *LogServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use safer URL path extraction with path.Clean to prevent path traversal
-	cleanPath := strings.TrimPrefix(r.URL.Path, "/logs/download/")
+	cleanPath := path.Clean(strings.TrimPrefix(r.URL.Path, "/logs/download/"))
 	parts := strings.Split(cleanPath, "/")
 	if len(parts) != 3 {
 		http.Error(w, "Invalid URL format", http.StatusBadRequest)
@@ -729,26 +772,43 @@ func (s *LogServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, podLogs)
 }
 
+// securityHandler adds consistent security checks for all endpoints
+func (s *LogServer) securityHandler(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Set basic security headers for all responses
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		
+		// Only allow GET requests
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		
+		// Call the original handler
+		handler(w, r)
+	}
+}
+
 func main() {
 	// no need for flags, use environment variables instead
 	// namespace := flag.String("namespace", "", "Kubernetes namespace to use")
 	// protected := flag.Bool("protected", false, "Protect the application with a token")
 	// flag.Parse()
 
-	// Set secure HTTP headers for all responses
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-XSS-Protection", "1; mode=block")
-		http.Error(w, "Not Found", http.StatusNotFound)
-	})
-
 	server, err := newLogServer(namespace, protected)
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
 	}
 
-	// Apply rate limiting to both endpoints
+	// Set secure HTTP headers for all responses and handle 404s
+	http.HandleFunc("/", server.securityHandler(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Not Found", http.StatusNotFound)
+	}))
+
+	// Apply rate limiting and security checks to all endpoints
+	http.HandleFunc("/logs", server.rateLimit(server.handleIndex))
 	http.HandleFunc("/logs/", server.rateLimit(server.handleIndex))
 	http.HandleFunc("/logs/download/", server.rateLimit(server.handleLogs))
 
