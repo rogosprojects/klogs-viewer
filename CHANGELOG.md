@@ -2,6 +2,20 @@
 
 All notable changes to the KLogs Viewer project will be documented in this file.
 
+## [0.0.19] - 2025-03-27
+
+### Security
+- Fixed authentication bypass vulnerability in URL path handling (`/logs` vs `/logs/`)
+- Implemented constant-time token comparison to prevent timing attacks
+- Added method validation to only allow GET requests for log endpoints
+- Enhanced token validation logic to prevent security misconfiguration issues
+- Improved error logging for authentication failures with client IP tracking
+- Added consistent security checks across all endpoints
+
+### Code Quality
+- Separated HTML templates from Go code for better maintainability
+- Added embedded file system for template storage
+
 ## [0.0.17]
 
 ### Security
