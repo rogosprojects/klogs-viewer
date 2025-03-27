@@ -1,11 +1,12 @@
 # Use the official Golang image as the base image
 FROM golang:1.23-alpine AS builder
 
-ARG VERSION=development
+ARG VERSION=-dev
 # Set the Current Working Directory inside the container
 WORKDIR /app
 
 COPY go.mod go.sum main.go ./
+COPY templates/ templates/
 
 # Download all dependencies. Dependencies will be cached if the go.mod and go.sum files are not changed
 RUN go mod download

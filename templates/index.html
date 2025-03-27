@@ -5,6 +5,149 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KLogs Viewer</title>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
+    <script>
+        // WebSocket functionality for log streaming
+        function openLogStream(url, containerName = 'Container', podName = '') {
+            // Create modal for log viewing
+            const modal = document.createElement('div');
+            modal.className = 'log-modal';
+
+            const modalContent = document.createElement('div');
+            modalContent.className = 'log-modal-content';
+
+            const header = document.createElement('div');
+            header.className = 'log-modal-header';
+
+            const title = document.createElement('h3');
+            title.textContent = `Log Stream: ${containerName}`;
+            if (podName) {
+                title.title = `Pod: ${podName}`;
+            }
+
+            const closeBtn = document.createElement('button');
+            closeBtn.className = 'log-modal-close';
+            closeBtn.innerHTML = '&times;';
+            closeBtn.onclick = function() {
+                document.body.removeChild(modal);
+                if (window.activeLogSocket) {
+                    window.activeLogSocket.close();
+                    window.activeLogSocket = null;
+                }
+            };
+
+            const logContent = document.createElement('pre');
+            logContent.className = 'log-content';
+
+            header.appendChild(title);
+            
+            // Add pod name display if available
+            if (podName) {
+                const podInfo = document.createElement('span');
+                podInfo.className = 'pod-info';
+                podInfo.textContent = `Pod: ${podName}`;
+                header.appendChild(podInfo);
+            }
+            
+            header.appendChild(closeBtn);
+
+            modalContent.appendChild(header);
+            modalContent.appendChild(logContent);
+
+            modal.appendChild(modalContent);
+            document.body.appendChild(modal);
+
+            // Check if browser supports WebSockets
+            if (!('WebSocket' in window)) {
+                logContent.textContent = 'WebSockets are not supported in this browser. Using fallback streaming.';
+
+                // Fallback to standard streaming
+                fetch(url)
+                    .then(response => {
+                        const reader = response.body.getReader();
+
+                        function readStream() {
+                            return reader.read().then(({ value, done }) => {
+                                if (done) {
+                                    logContent.textContent += '\n[End of stream]';
+                                    return;
+                                }
+
+                                const chunk = new TextDecoder().decode(value);
+                                logContent.textContent += chunk;
+                                logContent.scrollTop = logContent.scrollHeight;
+
+                                return readStream();
+                            });
+                        }
+
+                        return readStream();
+                    })
+                    .catch(error => {
+                        logContent.textContent += '\nError: ' + error;
+                    });
+
+                return;
+            }
+
+            // Convert http/https to ws/wss
+            const wsUrl = url.replace(/^http/, 'ws');
+
+            // Open WebSocket connection
+            const socket = new WebSocket(wsUrl);
+            window.activeLogSocket = socket;
+
+            socket.onopen = function() {
+                logContent.textContent = 'Connected. Waiting for logs...\n';
+            };
+
+            socket.onmessage = function(event) {
+                logContent.textContent += event.data;
+                logContent.scrollTop = logContent.scrollHeight;
+            };
+
+            socket.onclose = function() {
+                logContent.textContent += '\n[Connection closed]';
+            };
+
+            socket.onerror = function(error) {
+                logContent.textContent += '\nWebSocket Error: ' + error.message;
+                console.error('WebSocket error:', error);
+            };
+
+            // Ping the server every 30 seconds to keep the connection alive
+            const pingInterval = setInterval(function() {
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send('ping');
+                } else {
+                    clearInterval(pingInterval);
+                }
+            }, 30000);
+
+            // Clean up interval when socket closes
+            socket.addEventListener('close', function() {
+                clearInterval(pingInterval);
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            // Attach click handlers to stream links
+            const streamLinks = document.querySelectorAll('.stream-link');
+            streamLinks.forEach(link => {
+                link.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    // Get container name from parent row
+                    const containerRow = this.closest('.container-row');
+                    const containerName = containerRow ? containerRow.querySelector('.container-name').textContent : 'Container';
+                    
+                    // Get pod name from pod item
+                    const podItem = this.closest('.pod-item');
+                    const podName = podItem ? podItem.querySelector('.pod-name').textContent : '';
+                    
+                    openLogStream(this.href, containerName, podName);
+                });
+            });
+        });
+    </script>
     <style>
         :root {
             --primary: #3b82f6;
@@ -221,30 +364,122 @@
         .container-link {
             display: inline-flex;
             align-items: center;
-            background-color: var(--primary);
             color: white;
             text-decoration: none;
-            padding: 0.5rem 1rem;
+            padding: 0.5rem 0.75rem;
             border-radius: var(--radius);
-            font-size: 0.875rem;
+            font-size: 0.75rem;
             font-weight: 500;
             transition: background-color 0.2s;
+            white-space: nowrap;
         }
 
         .container-link:hover {
             background-color: var(--primary-hover);
         }
 
-        .container-link::before {
-            content: '⬇';
-            margin-right: 0.5rem;
+        .container-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 0.5rem;
+            display: inline-flex;
+            align-items: center;
+            background-color: var(--primary);
+            color: white;
+            text-decoration: none;
+            padding: 0.5rem 0.75rem;
+            border-radius: var(--radius);
             font-size: 0.75rem;
+            font-weight: 500;
+            transition: background-color 0.2s;
+            white-space: nowrap;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 0.5rem;
         }
 
         .empty-state {
             padding: 2rem;
             text-align: center;
             color: var(--text-secondary);
+        }
+
+        /* Log stream modal */
+        .log-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .log-modal-content {
+            width: 90%;
+            max-width: 1200px;
+            height: 80%;
+            background-color: var(--card-bg);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-lg);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .log-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .log-modal-header h3 {
+            margin: 0;
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+        
+        .pod-info {
+            margin-left: 1rem;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            font-style: italic;
+        }
+
+        .log-modal-close {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: var(--text-primary);
+        }
+
+        .log-content {
+            flex: 1;
+            padding: 1rem;
+            overflow-y: auto;
+            background-color: #1a1a1a;
+            color: #f0f0f0;
+            font-family: monospace;
+            font-size: 0.875rem;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            margin: 0;
+        }
+
+        @media (prefers-color-scheme: light) {
+            .log-content {
+                background-color: #f0f0f0;
+                color: #1a1a1a;
+            }
         }
 
         @media (max-width: 768px) {
@@ -260,6 +495,11 @@
                 flex-direction: column;
                 align-items: flex-start;
             }
+
+            .log-modal-content {
+                width: 95%;
+                height: 90%;
+            }
         }
     </style>
 </head>
@@ -267,7 +507,7 @@
     <header class="header">
         <h1>KLogs Viewer <span style="position: absolute;padding: 0.5rem 1rem;border-radius: 1rem;font-size: 0.65rem;vertical-align: top;">
             v{{.Version}}</span></h1>
-        <p>View and download container logs directly from your browser. Select a container below to download its logs.</p>
+        <p>Stream or download container logs directly from your browser. Select a container below to download its logs.</p>
         </div>
     </header>
 
@@ -295,7 +535,13 @@
                     </div>
                     <div class="container-links">
                         {{range .Containers}}
-                        <a href="{{.LogLink}}" class="container-link">{{.Name}}</a>
+                        <div class="container-row">
+                            <span class="container-name">{{.Name}}</span>
+                            <div class="button-group">
+                                <a href="{{.LogLink}}" class="container-link" title="Download logs">⬇</a>
+                                <a href="{{.StreamLink}}" class="container-link stream-link" title="Stream logs">▶</a>
+                            </div>
+                        </div>
                         {{end}}
                     </div>
                 </div>

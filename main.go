@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"embed"
@@ -8,6 +9,7 @@ import (
 	"html/template"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"golang.org/x/time/rate"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -109,8 +112,9 @@ type PodInfo struct {
 
 // ContainerInfo holds information about a container within a pod
 type ContainerInfo struct {
-	Name    string
-	LogLink string
+	Name       string
+	LogLink    string
+	StreamLink string
 }
 
 // Configuration constants for rate limiting
@@ -241,6 +245,21 @@ func createLogLink(namespace, podName, containerName string, token string) strin
 	return logLink
 }
 
+func createStreamLink(namespace, podName, containerName string, token string) string {
+	// URL encode path components to prevent injection
+	namespace = url.PathEscape(namespace)
+	podName = url.PathEscape(podName)
+	containerName = url.PathEscape(containerName)
+
+	streamLink := fmt.Sprintf("/logs/stream/%s/%s/%s", namespace, podName, containerName)
+
+	if token != "" {
+		streamLink += fmt.Sprintf("?t=%s", url.QueryEscape(token))
+	}
+
+	return streamLink
+}
+
 func (s *LogServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// Validate HTTP method to only allow GET requests
 	if r.Method != http.MethodGet {
@@ -258,7 +277,7 @@ func (s *LogServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-XSS-Protection", "1; mode=block")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' ws: wss:;")
 
 	podsByLabel := make(map[string][]PodInfo)
 
@@ -313,8 +332,9 @@ func (s *LogServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 			var containers []ContainerInfo
 			for _, container := range pod.Spec.Containers {
 				containers = append(containers, ContainerInfo{
-					Name:    container.Name,
-					LogLink: createLogLink(pod.Namespace, pod.Name, container.Name, token),
+					Name:       container.Name,
+					LogLink:    createLogLink(pod.Namespace, pod.Name, container.Name, token),
+					StreamLink: createStreamLink(pod.Namespace, pod.Name, container.Name, token),
 				})
 			}
 
@@ -479,6 +499,340 @@ func (s *LogServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, podLogs)
 }
 
+func (s *LogServer) handleStreamLogs(w http.ResponseWriter, r *http.Request) {
+	// Validate HTTP method to only allow GET requests
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Set security headers
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-XSS-Protection", "1; mode=block")
+
+	clientIP := r.RemoteAddr
+	// Get the X-Forwarded-For header in case this is behind a proxy
+	if forwardedFor := r.Header.Get("X-Forwarded-For"); forwardedFor != "" {
+		// Use the first IP in the chain
+		ips := strings.Split(forwardedFor, ",")
+		if len(ips) > 0 {
+			clientIP = strings.TrimSpace(ips[0])
+		}
+	}
+
+	if s.protected {
+		token := r.URL.Query().Get("t")
+		if token == "" {
+			log.Printf("Missing token attempt from %s", clientIP)
+			http.Error(w, "Missing token query parameter", http.StatusBadRequest)
+			return
+		}
+
+		if !validateToken(token) {
+			log.Printf("Invalid token attempt from %s", clientIP)
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	// Use safer URL path extraction with path.Clean to prevent path traversal
+	cleanPath := path.Clean(strings.TrimPrefix(r.URL.Path, "/logs/stream/"))
+	parts := strings.Split(cleanPath, "/")
+	if len(parts) != 3 {
+		http.Error(w, "Invalid URL format", http.StatusBadRequest)
+		return
+	}
+
+	// URL decode path components
+	namespace, err := url.PathUnescape(parts[0])
+	if err != nil {
+		http.Error(w, "Invalid URL format", http.StatusBadRequest)
+		return
+	}
+
+	podName, err := url.PathUnescape(parts[1])
+	if err != nil {
+		http.Error(w, "Invalid URL format", http.StatusBadRequest)
+		return
+	}
+
+	containerName, err := url.PathUnescape(parts[2])
+	if err != nil {
+		http.Error(w, "Invalid URL format", http.StatusBadRequest)
+		return
+	}
+
+	// Basic validation to prevent path traversal
+	for _, part := range []string{namespace, podName, containerName} {
+		if strings.Contains(part, "..") || strings.Contains(part, "\\") {
+			http.Error(w, "Invalid parameter", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Parse tail lines if specified in the query
+	tailLines := int64(100) // Default to 100 lines
+	if tailParam := r.URL.Query().Get("tail"); tailParam != "" {
+		if parsed, err := strconv.ParseInt(tailParam, 10, 64); err == nil && parsed > 0 {
+			tailLines = parsed
+		}
+	}
+
+	// Check for WebSocket protocol
+	if websocket.IsWebSocketUpgrade(r) {
+		s.handleWebSocketLogs(w, r, namespace, podName, containerName, tailLines)
+		return
+	}
+
+	// If not WebSocket, proceed with traditional HTTP streaming
+	// Set headers for live streaming with proper content type
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate") // Prevent caching
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Transfer-Encoding", "chunked") // Ensure chunked encoding
+	
+	// Use follow option to stream logs with additional options
+	logOptions := &v1.PodLogOptions{
+		Container: containerName,
+		Follow:    true,  // Follow the log stream in real time
+		TailLines: &tailLines, // Start with recent logs
+	}
+	
+	req := s.clientset.CoreV1().Pods(namespace).GetLogs(podName, logOptions)
+	
+	// Create a timeout context (30 min max for streaming)
+	streamCtx, cancelStream := context.WithTimeout(r.Context(), 30*time.Minute)
+	defer cancelStream()
+	
+	podLogs, err := req.Stream(streamCtx)
+	if err != nil {
+		log.Printf("Error getting logs stream for %s/%s/%s: %v", namespace, podName, containerName, err)
+		http.Error(w, "Error retrieving container logs", http.StatusInternalServerError)
+		return
+	}
+	defer podLogs.Close()
+
+	// Enable streaming response
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+	
+	// Use io.Copy with a custom writer that flushes after each write
+	flushWriter := &flushResponseWriter{w: w, flusher: flusher}
+	
+	// Set up rate limiting for high-volume logs (10MB/s max)
+	logLimiter := rate.NewLimiter(10*1024*1024, 1024*1024) // 10MB/s with 1MB burst
+	
+	// Copy with rate limiting
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		
+		// Use a larger buffer for efficiency
+		buf := make([]byte, 32*1024)
+		
+		for {
+			select {
+			case <-streamCtx.Done():
+				return
+			default:
+				n, err := podLogs.Read(buf)
+				if err != nil {
+					if err == io.EOF {
+						return
+					}
+					log.Printf("Error reading log stream: %v", err)
+					return
+				}
+				
+				if n > 0 {
+					// Apply rate limiting
+					if err := logLimiter.WaitN(streamCtx, n); err != nil {
+						log.Printf("Rate limiting error: %v", err)
+						return
+					}
+					
+					if _, err := flushWriter.Write(buf[:n]); err != nil {
+						log.Printf("Error writing to response: %v", err)
+						return
+					}
+				}
+			}
+		}
+	}()
+	
+	// Wait for streaming to complete
+	select {
+	case <-r.Context().Done():
+		// Client disconnected
+		cancelStream() // Signal to the streaming goroutine to stop
+		<-done         // Wait for the goroutine to finish
+	case <-done:
+		// Streaming completed
+	}
+}
+
+// handleWebSocketLogs handles log streaming via WebSockets for longer connections
+func (s *LogServer) handleWebSocketLogs(w http.ResponseWriter, r *http.Request, namespace, podName, containerName string, tailLines int64) {
+	// Upgrade the HTTP connection to a WebSocket
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("Failed to upgrade to WebSocket: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	// Set up a ping/pong handler to keep connection alive
+	conn.SetPingHandler(func(message string) error {
+		err := conn.WriteControl(websocket.PongMessage, []byte(message), time.Now().Add(10*time.Second))
+		if err == websocket.ErrCloseSent {
+			return nil
+		} else if e, ok := err.(net.Error); ok && e.Temporary() {
+			return nil
+		}
+		return err
+	})
+
+	// Create a much longer context timeout for WebSocket connections (4 hours)
+	streamCtx, cancelStream := context.WithTimeout(r.Context(), 4*time.Hour)
+	defer cancelStream()
+
+	// Use follow option to stream logs
+	logOptions := &v1.PodLogOptions{
+		Container: containerName,
+		Follow:    true,
+		TailLines: &tailLines,
+	}
+
+	req := s.clientset.CoreV1().Pods(namespace).GetLogs(podName, logOptions)
+	podLogs, err := req.Stream(streamCtx)
+	if err != nil {
+		log.Printf("Error getting logs stream for WebSocket %s/%s/%s: %v", namespace, podName, containerName, err)
+		conn.WriteMessage(websocket.TextMessage, []byte("Error retrieving container logs: "+err.Error()))
+		return
+	}
+	defer podLogs.Close()
+
+	// Start a goroutine to read from the WebSocket (client messages)
+	stopChan := make(chan struct{})
+	go func() {
+		defer close(stopChan)
+		for {
+			// Read message from browser (client might send commands)
+			_, _, err := conn.ReadMessage()
+			if err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					log.Printf("WebSocket read error: %v", err)
+				}
+				return
+			}
+			// Currently, we don't process client messages, but we could add command handling here
+		}
+	}()
+
+	// Create a ticker for sending ping messages to keep the connection alive
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
+
+	// Set up rate limiting for high-volume logs (5MB/s max for WebSockets)
+	logLimiter := rate.NewLimiter(5*1024*1024, 512*1024) // 5MB/s with 512KB burst
+
+	// Buffer for reading logs
+	buf := make([]byte, 16*1024)
+	lineBuf := make([]byte, 0, 16*1024) // For accumulating partial lines
+
+	// Process logs and send over WebSocket
+	for {
+		select {
+		case <-stopChan:
+			// Client disconnected
+			return
+		case <-pingTicker.C:
+			// Send ping to keep connection alive
+			if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
+				log.Printf("Failed to send ping: %v", err)
+				return
+			}
+		default:
+			// Read from log stream
+			n, err := podLogs.Read(buf)
+			if err != nil {
+				if err == io.EOF {
+					// Wait a bit before closing to see if more logs come in
+					select {
+					case <-stopChan:
+						return
+					case <-time.After(5 * time.Second):
+						// If pod is still running, maybe more logs will come
+						continue
+					}
+				}
+				log.Printf("Error reading log stream for WebSocket: %v", err)
+				conn.WriteMessage(websocket.TextMessage, []byte("Log stream ended: "+err.Error()))
+				return
+			}
+
+			if n > 0 {
+				// Apply rate limiting
+				if err := logLimiter.WaitN(streamCtx, n); err != nil {
+					log.Printf("Rate limiting error: %v", err)
+					return
+				}
+
+				// Process and send logs in complete lines when possible
+				lineBuf = append(lineBuf, buf[:n]...)
+				lines := bytes.Split(lineBuf, []byte("\n"))
+				
+				// Send all complete lines
+				if len(lines) > 1 {
+					// All lines except the last one are complete
+					for i := 0; i < len(lines)-1; i++ {
+						// Send each complete line as a separate WebSocket message
+						if len(lines[i]) > 0 {
+							if err := conn.WriteMessage(websocket.TextMessage, append(lines[i], '\n')); err != nil {
+								log.Printf("Error writing to WebSocket: %v", err)
+								return
+							}
+						}
+					}
+					
+					// Keep the last (potentially incomplete) line in the buffer
+					lineBuf = lines[len(lines)-1]
+				}
+			}
+		}
+	}
+}
+
+// flushResponseWriter wraps an http.ResponseWriter and flushes after each write
+type flushResponseWriter struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+}
+
+func (fw *flushResponseWriter) Write(p []byte) (n int, err error) {
+	n, err = fw.w.Write(p)
+	if err == nil {
+		fw.flusher.Flush()
+	}
+	return
+}
+
+// WebSocket configuration
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		// You can implement more strict origin checks in production
+		return true
+	},
+}
+
 // securityHandler adds consistent security checks for all endpoints
 func (s *LogServer) securityHandler(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -518,6 +872,7 @@ func main() {
 	http.HandleFunc("/logs", server.rateLimit(server.handleIndex))
 	http.HandleFunc("/logs/", server.rateLimit(server.handleIndex))
 	http.HandleFunc("/logs/download/", server.rateLimit(server.handleLogs))
+	http.HandleFunc("/logs/stream/", server.rateLimit(server.handleStreamLogs))
 
 	log.Printf("Server starting on: 8080")
 	log.Printf("Namespace: %s", namespace)

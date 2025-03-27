@@ -2,6 +2,24 @@
 
 All notable changes to the KLogs Viewer project will be documented in this file.
 
+## [0.0.20] - 2025-03-27
+
+### Added
+- Implemented WebSocket support for long-lived log streaming connections (up to 4 hours)
+- Added in-browser log streaming modal with real-time updates
+- Created unified UI with download and stream buttons in the same row
+- Enhanced log streaming performance with optimized buffer handling
+- Automatic fallback to HTTP streaming for browsers without WebSocket support
+
+### Security
+- Updated Content Security Policy to support WebSockets and inline scripts
+- Implemented ping/pong mechanism to maintain connection health
+- Added rate limiting for WebSocket connections to prevent abuse
+
+### Performance
+- Improved log streaming efficiency with line buffering
+- Added configurable timeouts for different connection types
+
 ## [0.0.19] - 2025-03-27
 
 ### Security
