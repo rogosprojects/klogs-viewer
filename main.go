@@ -266,7 +266,7 @@ func (s *LogServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	// Handle both /logs and /logs/ paths consistently
 	if r.URL.Path != "/logs" && r.URL.Path != "/logs/" {
 		http.Error(w, "Not Found", http.StatusNotFound)
@@ -593,20 +593,20 @@ func (s *LogServer) handleStreamLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Expires", "0")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Transfer-Encoding", "chunked") // Ensure chunked encoding
-	
+
 	// Use follow option to stream logs with additional options
 	logOptions := &v1.PodLogOptions{
 		Container: containerName,
-		Follow:    true,  // Follow the log stream in real time
+		Follow:    true,       // Follow the log stream in real time
 		TailLines: &tailLines, // Start with recent logs
 	}
-	
+
 	req := s.clientset.CoreV1().Pods(namespace).GetLogs(podName, logOptions)
-	
+
 	// Create a timeout context (30 min max for streaming)
 	streamCtx, cancelStream := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancelStream()
-	
+
 	podLogs, err := req.Stream(streamCtx)
 	if err != nil {
 		log.Printf("Error getting logs stream for %s/%s/%s: %v", namespace, podName, containerName, err)
@@ -621,21 +621,21 @@ func (s *LogServer) handleStreamLogs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
 		return
 	}
-	
+
 	// Use io.Copy with a custom writer that flushes after each write
 	flushWriter := &flushResponseWriter{w: w, flusher: flusher}
-	
+
 	// Set up rate limiting for high-volume logs (10MB/s max)
 	logLimiter := rate.NewLimiter(10*1024*1024, 1024*1024) // 10MB/s with 1MB burst
-	
+
 	// Copy with rate limiting
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		
+
 		// Use a larger buffer for efficiency
 		buf := make([]byte, 32*1024)
-		
+
 		for {
 			select {
 			case <-streamCtx.Done():
@@ -649,14 +649,14 @@ func (s *LogServer) handleStreamLogs(w http.ResponseWriter, r *http.Request) {
 					log.Printf("Error reading log stream: %v", err)
 					return
 				}
-				
+
 				if n > 0 {
 					// Apply rate limiting
 					if err := logLimiter.WaitN(streamCtx, n); err != nil {
 						log.Printf("Rate limiting error: %v", err)
 						return
 					}
-					
+
 					if _, err := flushWriter.Write(buf[:n]); err != nil {
 						log.Printf("Error writing to response: %v", err)
 						return
@@ -665,7 +665,7 @@ func (s *LogServer) handleStreamLogs(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
-	
+
 	// Wait for streaming to complete
 	select {
 	case <-r.Context().Done():
@@ -787,7 +787,7 @@ func (s *LogServer) handleWebSocketLogs(w http.ResponseWriter, r *http.Request, 
 				// Process and send logs in complete lines when possible
 				lineBuf = append(lineBuf, buf[:n]...)
 				lines := bytes.Split(lineBuf, []byte("\n"))
-				
+
 				// Send all complete lines
 				if len(lines) > 1 {
 					// All lines except the last one are complete
@@ -800,7 +800,7 @@ func (s *LogServer) handleWebSocketLogs(w http.ResponseWriter, r *http.Request, 
 							}
 						}
 					}
-					
+
 					// Keep the last (potentially incomplete) line in the buffer
 					lineBuf = lines[len(lines)-1]
 				}
@@ -840,13 +840,13 @@ func (s *LogServer) securityHandler(handler http.HandlerFunc) http.HandlerFunc {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
-		
+
 		// Only allow GET requests
 		if r.Method != http.MethodGet {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		
+
 		// Call the original handler
 		handler(w, r)
 	}

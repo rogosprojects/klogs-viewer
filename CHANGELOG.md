@@ -2,6 +2,20 @@
 
 All notable changes to the KLogs Viewer project will be documented in this file.
 
+## [0.0.21] - 2025-03-28
+
+### Added
+- Implemented client-side search functionality to filter pods
+- Added search input in the top-right corner of the header
+- Search filters by pod name, namespace, status, and container names
+- Dynamic UI updates that hide empty sections during search
+- Added clear button and ESC key support for resetting search
+
+### User Experience
+- Improved search experience with real-time filtering
+- Added "No results" message when search has no matches
+- Enhanced responsive design for search on mobile devices
+
 ## [0.0.20] - 2025-03-27
 
 ### Added
