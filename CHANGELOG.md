@@ -4,6 +4,13 @@ All notable changes to the KLogs Viewer project will be documented in this file.
 
 ## [0.0.21] - 2025-03-28
 
+### Security
+- Implemented proper WebSocket origin checking to prevent cross-site WebSocket hijacking
+- Added ALLOWED_ORIGINS environment variable to configure allowed WebSocket origins
+- Defaulted to same-origin policy when no origins are explicitly configured
+- Added detailed logging of rejected WebSocket connection attempts
+
+
 ### Added
 - Implemented client-side search functionality to filter pods
 - Added search input in the top-right corner of the header

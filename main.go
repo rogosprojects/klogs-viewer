@@ -141,11 +141,15 @@ var burst int
 var visitorTTL time.Duration
 var cleanupInterval time.Duration
 
+// CORS/WebSocket configuration
+var allowedOrigins string
+
 func init() {
 	validToken = os.Getenv("TOKEN")
 	labels = os.Getenv("POD_LABELS")
 	namespace = os.Getenv("NAMESPACE")
 	replaceLabel = os.Getenv("REPLACE_LABEL")
+	allowedOrigins = os.Getenv("ALLOWED_ORIGINS")
 
 	protected = len(validToken) > 0
 
@@ -828,8 +832,43 @@ var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		// You can implement more strict origin checks in production
-		return true
+		// Get the Origin header
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true // Allow requests with no origin (like curl or direct API calls)
+		}
+		
+		// Parse the origin URL
+		u, err := url.Parse(origin)
+		if err != nil {
+			log.Printf("Invalid WebSocket origin format: %s", origin)
+			return false // Reject invalid origins
+		}
+		
+		// Get allowed origins from environment variable
+		allowedOriginsEnv := os.Getenv("ALLOWED_ORIGINS")
+		if allowedOriginsEnv == "" {
+			// If not configured, only allow same-origin requests
+			host := r.Host
+			return u.Host == host
+		}
+		
+		// Check against comma-separated list of allowed origins
+		allowedOrigins := strings.Split(allowedOriginsEnv, ",")
+		for _, allowed := range allowedOrigins {
+			allowed = strings.TrimSpace(allowed)
+			if allowed == "*" {
+				return true // Explicitly configured to allow all origins
+			}
+			
+			if u.Host == allowed || strings.HasSuffix(u.Host, "."+allowed) {
+				return true
+			}
+		}
+		
+		// Log rejected origins for monitoring
+		log.Printf("Rejected WebSocket connection from origin: %s", origin)
+		return false
 	},
 }
 
@@ -878,6 +917,15 @@ func main() {
 	log.Printf("Namespace: %s", namespace)
 	log.Print("Token protection: ", protected)
 	log.Printf("Rate limiting: %.1f requests per minute per IP with burst of %d", rateLimit, burst)
+	
+	// Log WebSocket security configuration
+	if allowedOrigins == "" {
+		log.Printf("WebSocket origin checking: Enabled (same-origin only)")
+	} else if allowedOrigins == "*" {
+		log.Printf("WebSocket origin checking: Disabled (all origins allowed)")
+	} else {
+		log.Printf("WebSocket origin checking: Enabled (allowed origins: %s)", allowedOrigins)
+	}
 
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }

@@ -50,6 +50,12 @@ helm install klogs-viewer rogosprojects/klogs-viewer
 | `VISITOR_TTL` | Time (in minutes) to keep inactive clients in memory | `60` |
 | `CLEANUP_INTERVAL` | Frequency (in minutes) to clean up inactive clients | `60` |
 
+#### WebSocket Security Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ALLOWED_ORIGINS` | Comma-separated list of origins allowed to connect via WebSocket | Same-origin only |
+
 ## 🔒 Security
 
 When deploying to production, we recommend:
@@ -58,6 +64,10 @@ When deploying to production, we recommend:
 2. Using a specific namespace rather than cluster-wide access
 3. Deploying behind an ingress with TLS
 4. Configuring appropriate rate limits for your expected traffic patterns
+5. Setting appropriate origin restrictions for WebSocket connections:
+   - For single-domain deployments: leave `ALLOWED_ORIGINS` empty to enforce same-origin policy
+   - For multi-domain deployments: set `ALLOWED_ORIGINS` to a comma-separated list of allowed domains
+   - For testing/development only: set `ALLOWED_ORIGINS=*` (not recommended for production)
 
 
 ## 🛠️ Building from Source
