@@ -728,14 +728,20 @@ func (s *LogServer) handleWebSocketLogs(w http.ResponseWriter, r *http.Request, 
 		defer close(stopChan)
 		for {
 			// Read message from browser (client might send commands)
-			_, _, err := conn.ReadMessage()
+			_, msg, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					log.Printf("WebSocket read error: %v", err)
 				}
 				return
 			}
-			// Currently, we don't process client messages, but we could add command handling here
+
+			// Process client messages
+			if string(msg) == "close" {
+				log.Printf("Received close signal from client for %s/%s/%s", namespace, podName, containerName)
+				return // Exit goroutine and close connection gracefully
+			}
+			// Process other messages like ping
 		}
 	}()
 
@@ -837,14 +843,14 @@ var upgrader = websocket.Upgrader{
 		if origin == "" {
 			return true // Allow requests with no origin (like curl or direct API calls)
 		}
-		
+
 		// Parse the origin URL
 		u, err := url.Parse(origin)
 		if err != nil {
 			log.Printf("Invalid WebSocket origin format: %s", origin)
 			return false // Reject invalid origins
 		}
-		
+
 		// Get allowed origins from environment variable
 		allowedOriginsEnv := os.Getenv("ALLOWED_ORIGINS")
 		if allowedOriginsEnv == "" {
@@ -852,7 +858,7 @@ var upgrader = websocket.Upgrader{
 			host := r.Host
 			return u.Host == host
 		}
-		
+
 		// Check against comma-separated list of allowed origins
 		allowedOrigins := strings.Split(allowedOriginsEnv, ",")
 		for _, allowed := range allowedOrigins {
@@ -860,12 +866,12 @@ var upgrader = websocket.Upgrader{
 			if allowed == "*" {
 				return true // Explicitly configured to allow all origins
 			}
-			
+
 			if u.Host == allowed || strings.HasSuffix(u.Host, "."+allowed) {
 				return true
 			}
 		}
-		
+
 		// Log rejected origins for monitoring
 		log.Printf("Rejected WebSocket connection from origin: %s", origin)
 		return false
@@ -917,7 +923,7 @@ func main() {
 	log.Printf("Namespace: %s", namespace)
 	log.Print("Token protection: ", protected)
 	log.Printf("Rate limiting: %.1f requests per minute per IP with burst of %d", rateLimit, burst)
-	
+
 	// Log WebSocket security configuration
 	if allowedOrigins == "" {
 		log.Printf("WebSocket origin checking: Enabled (same-origin only)")

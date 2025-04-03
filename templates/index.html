@@ -11,6 +11,16 @@
             // Create modal for log viewing
             const modal = document.createElement('div');
             modal.className = 'log-modal';
+            
+            // Function to properly close the WebSocket and modal
+            const closeModalAndSocket = function() {
+                if (window.activeLogSocket && window.activeLogSocket.readyState === WebSocket.OPEN) {
+                    window.activeLogSocket.send("close");
+                    window.activeLogSocket.close();
+                    window.activeLogSocket = null;
+                }
+                document.body.removeChild(modal);
+            };
 
             const modalContent = document.createElement('div');
             modalContent.className = 'log-modal-content';
@@ -27,13 +37,7 @@
             const closeBtn = document.createElement('button');
             closeBtn.className = 'log-modal-close';
             closeBtn.innerHTML = '&times;';
-            closeBtn.onclick = function() {
-                document.body.removeChild(modal);
-                if (window.activeLogSocket) {
-                    window.activeLogSocket.close();
-                    window.activeLogSocket = null;
-                }
-            };
+            closeBtn.onclick = closeModalAndSocket;
 
             const logContent = document.createElement('pre');
             logContent.className = 'log-content';
@@ -55,6 +59,15 @@
 
             modal.appendChild(modalContent);
             document.body.appendChild(modal);
+            
+            // Add ESC key handler to close modal
+            const keyHandler = function(e) {
+                if (e.key === 'Escape') {
+                    closeModalAndSocket();
+                    document.removeEventListener('keydown', keyHandler);
+                }
+            };
+            document.addEventListener('keydown', keyHandler);
 
             // Check if browser supports WebSockets
             if (!('WebSocket' in window)) {
@@ -126,6 +139,14 @@
             // Clean up interval when socket closes
             socket.addEventListener('close', function() {
                 clearInterval(pingInterval);
+            });
+            
+            // Handle page unload/close events to properly close the WebSocket
+            window.addEventListener('beforeunload', function() {
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send('close');
+                    socket.close();
+                }
             });
         }
 
