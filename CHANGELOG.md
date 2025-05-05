@@ -2,6 +2,14 @@
 
 All notable changes to the KLogs Viewer project will be documented in this file.
 
+## [0.1.0] - 2025-05-05
+
+### User Interface
+- Completely redesigned UI with a single table layout for all pods and containers
+- Added quick filters for namespaces and labels
+- Improved container grouping to show multiple containers from the same pod together
+- Optimized space usage throughout the interface
+
 ## [0.0.21] - 2025-03-28
 
 ### Security

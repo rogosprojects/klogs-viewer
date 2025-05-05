@@ -9,10 +9,13 @@ KLogs Viewer is a lightweight, web-based application that allows you to view and
 
 ## ✨ Features
 
-- **Simple Web Interface**: Browse pods organized by labels
+- **Efficient Table Layout**: View all pods and containers in a single, space-efficient table
+- **Quick Filters**: Filter by namespace, label, or status with a single click
+- **Search Functionality**: Instantly find pods or containers with the search feature
 - **One-click Downloads**: Download container logs with a single click
-- **Status Indicators**: Visual indicators show pod status (Running, Pending, Failed, etc.)
+- **Real-time Streaming**: Stream logs directly in your browser
 - **Multi-container Support**: Access logs from any container in multi-container pods
+- **Visual Status Indicators**: Clear visual indicators show pod status (Running, Pending, Failed, etc.)
 - **Dark Mode Support**: Comfortable viewing in any lighting condition
 - **Optional Authentication**: Token-based protection for secure deployments
 

@@ -11,7 +11,7 @@
             // Create modal for log viewing
             const modal = document.createElement('div');
             modal.className = 'log-modal';
-            
+
             // Function to properly close the WebSocket and modal
             const closeModalAndSocket = function() {
                 if (window.activeLogSocket && window.activeLogSocket.readyState === WebSocket.OPEN) {
@@ -43,7 +43,7 @@
             logContent.className = 'log-content';
 
             header.appendChild(title);
-            
+
             // Add pod name display if available
             if (podName) {
                 const podInfo = document.createElement('span');
@@ -51,7 +51,7 @@
                 podInfo.textContent = `Pod: ${podName}`;
                 header.appendChild(podInfo);
             }
-            
+
             header.appendChild(closeBtn);
 
             modalContent.appendChild(header);
@@ -59,7 +59,7 @@
 
             modal.appendChild(modalContent);
             document.body.appendChild(modal);
-            
+
             // Add ESC key handler to close modal
             const keyHandler = function(e) {
                 if (e.key === 'Escape') {
@@ -140,7 +140,7 @@
             socket.addEventListener('close', function() {
                 clearInterval(pingInterval);
             });
-            
+
             // Handle page unload/close events to properly close the WebSocket
             window.addEventListener('beforeunload', function() {
                 if (socket.readyState === WebSocket.OPEN) {
@@ -159,123 +159,212 @@
                     // Get container name from parent row
                     const containerRow = this.closest('.container-row');
                     const containerName = containerRow ? containerRow.querySelector('.container-name').textContent : 'Container';
-                    
+
                     // Get pod name from pod item
                     const podItem = this.closest('.pod-item');
                     const podName = podItem ? podItem.querySelector('.pod-name').textContent : '';
-                    
+
                     openLogStream(this.href, containerName, podName);
                 });
             });
-            
+
+            // Get all pod rows and empty state message
+            const podRows = document.querySelectorAll('.pod-row');
+            const emptyState = document.querySelector('.empty-state');
+
+            // Initialize filter selects
+            const namespaceFilter = document.getElementById('namespace-filter');
+            const labelFilter = document.getElementById('label-filter');
+
+            // Populate namespace and label filters
+            const namespaces = new Set();
+            const labels = new Set();
+
+            podRows.forEach(row => {
+                const namespace = row.querySelector('.pod-namespace').textContent.trim();
+                const label = row.querySelector('.pod-label').textContent.trim();
+
+                namespaces.add(namespace);
+                labels.add(label);
+            });
+
+            // Sort and add options
+            [...namespaces].sort().forEach(namespace => {
+                const option = document.createElement('option');
+                option.value = namespace;
+                option.textContent = namespace;
+                namespaceFilter.appendChild(option);
+            });
+
+            [...labels].sort().forEach(label => {
+                const option = document.createElement('option');
+                option.value = label;
+                option.textContent = label;
+                labelFilter.appendChild(option);
+            });
+
+            // Status filter functionality
+            const statusBadges = document.querySelectorAll('.status-legend .status-badge');
+
+            // Track active filters
+            const activeFilters = {
+                status: new Set(),
+                namespace: '',
+                label: ''
+            };
+
+            // Status badge click handlers
+            statusBadges.forEach(badge => {
+                badge.addEventListener('click', function() {
+                    const status = this.dataset.status;
+
+                    // Toggle filter state
+                    if (activeFilters.status.has(status)) {
+                        activeFilters.status.delete(status);
+                        this.classList.remove('filtered');
+                    } else {
+                        activeFilters.status.add(status);
+                        this.classList.add('filtered');
+                    }
+
+                    // Apply filters
+                    applyFilters();
+                });
+            });
+
+            // Namespace and label filter change handlers
+            namespaceFilter.addEventListener('change', function() {
+                activeFilters.namespace = this.value;
+                applyFilters();
+            });
+
+            labelFilter.addEventListener('change', function() {
+                activeFilters.label = this.value;
+                applyFilters();
+            });
+
+            function applyFilters() {
+                // Check if status filters are active
+                const showAllStatus = activeFilters.status.size === 0;
+                let visibleCount = 0;
+
+                podRows.forEach(row => {
+                    // Get status from the row's class
+                    const statusClass = Array.from(row.classList)
+                        .find(cls => cls.startsWith('status-'));
+                    const status = statusClass ? statusClass.replace('status-', '') : '';
+
+                    // Get namespace and label
+                    const namespace = row.querySelector('.pod-namespace').textContent.trim();
+                    const label = row.querySelector('.pod-label').textContent.trim();
+
+                    // Check if row matches all active filters
+                    const matchesStatus = showAllStatus || !activeFilters.status.has(status);
+                    const matchesNamespace = !activeFilters.namespace || namespace === activeFilters.namespace;
+                    const matchesLabel = !activeFilters.label || label === activeFilters.label;
+
+                    // Show row if it matches all active filters
+                    if (matchesStatus && matchesNamespace && matchesLabel) {
+                        row.style.display = '';
+                        visibleCount++;
+                    } else {
+                        row.style.display = 'none';
+                    }
+                });
+
+                // Show/hide empty state message
+                if (visibleCount === 0) {
+                    emptyState.style.display = 'block';
+                    emptyState.textContent = 'No pods found matching your filters';
+                } else {
+                    emptyState.style.display = 'none';
+                }
+
+                // Also apply any active search filter
+                if (searchInput.value.trim()) {
+                    filterPods();
+                }
+            }
+
             // Pod search functionality
             const searchInput = document.getElementById('pod-search');
             const clearButton = document.getElementById('clear-search');
             const podItems = document.querySelectorAll('.pod-item');
             const labelSections = document.querySelectorAll('.label-section');
-            
+
             // Filter pods based on search input
             function filterPods() {
                 const searchTerm = searchInput.value.toLowerCase().trim();
                 let visibleCount = 0;
-                
+                const emptyState = document.querySelector('.empty-state');
+
                 // Show/hide clear button
                 if (searchTerm.length > 0) {
                     clearButton.classList.add('visible');
                 } else {
                     clearButton.classList.remove('visible');
                 }
-                
-                // Reset any existing empty search messages
-                document.querySelectorAll('.empty-search-message').forEach(el => el.remove());
-                
-                // Filter each pod based on the search term
-                podItems.forEach(pod => {
-                    const podName = pod.querySelector('.pod-name').textContent.toLowerCase();
-                    const namespace = pod.querySelector('.pod-namespace').textContent.toLowerCase();
-                    const status = pod.querySelector('.pod-status-badge').textContent.toLowerCase();
-                    const containers = Array.from(pod.querySelectorAll('.container-name'))
-                        .map(container => container.textContent.toLowerCase());
-                    
-                    // Match against pod name, namespace, status, and container names
-                    const matchesSearch = 
-                        podName.includes(searchTerm) || 
-                        namespace.includes(searchTerm) || 
-                        status.includes(searchTerm) || 
-                        containers.some(container => container.includes(searchTerm));
-                    
-                    if (matchesSearch) {
-                        pod.classList.remove('hidden');
+
+                // Filter each pod row based on the search term
+                const podRows = document.querySelectorAll('.pod-row');
+                podRows.forEach(row => {
+                    const podName = row.querySelector('.pod-name').textContent.toLowerCase();
+                    const namespace = row.querySelector('.pod-namespace').textContent.toLowerCase();
+                    const status = row.querySelector('.pod-status-badge').textContent.toLowerCase();
+                    const label = row.querySelector('.pod-label').textContent.toLowerCase();
+
+                    // Get all container names in this row
+                    const containerNames = Array.from(row.querySelectorAll('.container-name-text'))
+                        .map(el => el.textContent.toLowerCase());
+
+                    // Match against pod name, namespace, status, label, and container names
+                    const matchesSearch =
+                        podName.includes(searchTerm) ||
+                        namespace.includes(searchTerm) ||
+                        status.includes(searchTerm) ||
+                        label.includes(searchTerm) ||
+                        containerNames.some(name => name.includes(searchTerm));
+
+                    // Also check if this row should be hidden by other filters
+                    const statusClass = Array.from(row.classList)
+                        .find(cls => cls.startsWith('status-'));
+                    const status2 = statusClass ? statusClass.replace('status-', '') : '';
+                    const rowNamespace = row.querySelector('.pod-namespace').textContent.trim();
+                    const rowLabel = row.querySelector('.pod-label').textContent.trim();
+
+                    const hiddenByStatusFilter = activeFilters.status.size > 0 && activeFilters.status.has(status2);
+                    const hiddenByNamespaceFilter = activeFilters.namespace && rowNamespace !== activeFilters.namespace;
+                    const hiddenByLabelFilter = activeFilters.label && rowLabel !== activeFilters.label;
+
+                    if (matchesSearch && !hiddenByStatusFilter && !hiddenByNamespaceFilter && !hiddenByLabelFilter) {
+                        row.style.display = '';
                         visibleCount++;
                     } else {
-                        pod.classList.add('hidden');
+                        row.style.display = 'none';
                     }
                 });
-                
-                // Get the main label container
-                const labelContainer = document.querySelector('.label-container');
-                
-                // Check each section to see if it has any visible pods
-                let totalVisiblePods = 0;
-                labelSections.forEach(section => {
-                    const podGrid = section.querySelector('.pod-grid');
-                    const visiblePods = podGrid ? podGrid.querySelectorAll('.pod-item:not(.hidden)').length : 0;
-                    totalVisiblePods += visiblePods;
-                    const emptyState = section.querySelector('.empty-state');
-                    
-                    // If the section has visible pods, show the section
-                    if (visiblePods > 0) {
-                        section.style.display = 'block';
-                        // If there was previously an empty state message, remove it
-                        if (emptyState) {
-                            emptyState.style.display = 'none';
-                        }
-                        // Show the pod grid
-                        if (podGrid) {
-                            podGrid.style.display = 'grid';
-                        }
-                    } else {
-                        // No visible pods in this section
-                        section.style.display = 'none';
-                    }
-                });
-                
-                // Show or hide the entire label container based on search results
-                if (totalVisiblePods === 0 && searchTerm) {
-                    // No pods found matching the search
-                    labelContainer.style.display = 'none';
-                    
-                    // Create or update a global no-results message if it doesn't exist
-                    let noResultsMsg = document.querySelector('.no-results-message');
-                    if (!noResultsMsg) {
-                        noResultsMsg = document.createElement('div');
-                        noResultsMsg.className = 'empty-search-message no-results-message';
-                        labelContainer.parentNode.insertBefore(noResultsMsg, labelContainer.nextSibling);
-                    }
-                    noResultsMsg.textContent = `No pods found matching "${searchTerm}"`;
-                    noResultsMsg.style.display = 'block';
+
+                // Show or hide the empty state message
+                if (visibleCount === 0) {
+                    emptyState.style.display = 'block';
+                    emptyState.textContent = searchTerm ?
+                        `No pods found matching "${searchTerm}"` :
+                        'No pods found matching your filters';
                 } else {
-                    // Show the label container
-                    labelContainer.style.display = 'grid';
-                    
-                    // Hide any existing no-results message
-                    const noResultsMsg = document.querySelector('.no-results-message');
-                    if (noResultsMsg) {
-                        noResultsMsg.style.display = 'none';
-                    }
+                    emptyState.style.display = 'none';
                 }
             }
-            
+
             // Event handlers for search input
             searchInput.addEventListener('input', filterPods);
-            
+
             // Clear search
             clearButton.addEventListener('click', function() {
                 searchInput.value = '';
                 filterPods();
                 searchInput.focus();
             });
-            
+
             // Allow ESC key to clear search
             searchInput.addEventListener('keydown', function(e) {
                 if (e.key === 'Escape') {
@@ -342,7 +431,7 @@
             justify-content: space-between;
             align-items: flex-start;
         }
-        
+
         .header-content {
             flex: 1;
             min-width: 300px;
@@ -407,7 +496,7 @@
         .label-container {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(min(100%, 30rem), 1fr));
-            gap: 2rem;
+            gap: 1.5rem;
         }
 
         .label-section {
@@ -419,30 +508,104 @@
         }
 
         .label-title {
-            padding: 1.25rem;
-            font-size: 1.25rem;
+            padding: 0.75rem 1.25rem;
+            font-size: 1.125rem;
             font-weight: 600;
             background-color: rgba(59, 130, 246, 0.05);
             border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .label-title:hover {
+            background-color: rgba(59, 130, 246, 0.1);
+        }
+
+        .label-title::after {
+            content: '▼';
+            font-size: 0.75rem;
+            transition: transform 0.2s;
+        }
+
+        .label-section.collapsed .label-title::after {
+            transform: rotate(-90deg);
+        }
+
+        .label-section.collapsed .pod-grid {
+            display: none;
+        }
+
+        .view-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .view-toggle-btn {
+            padding: 0.5rem 0.75rem;
+            border-radius: var(--radius);
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            cursor: pointer;
+            font-size: 0.875rem;
+            transition: all 0.2s;
+        }
+
+        .view-toggle-btn.active {
+            background-color: var(--primary);
+            color: white;
+            border-color: var(--primary);
         }
 
         .pod-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
-            gap: 1rem;
-            padding: 1.25rem;
+            gap: 0.75rem;
+            padding: 0.75rem;
+        }
+
+        .pod-grid.list-view {
+            display: table;
+            width: 100%;
+            padding: 0;
+            border-spacing: 0;
+        }
+
+        .pod-grid.list-view .pod-item {
+            display: table-row;
+            border-radius: 0;
+            box-shadow: none;
+            padding: 0;
+        }
+
+        .pod-grid.list-view .pod-header,
+        .pod-grid.list-view .container-links {
+            display: table-cell;
+            padding: 0.5rem 0.75rem;
+            vertical-align: middle;
+        }
+
+        .pod-grid.list-view .pod-item::before {
+            width: 0.25rem;
+            height: 100%;
+            position: absolute;
+            left: 0;
         }
 
         .pod-item {
             border-radius: var(--radius);
-            padding: 1.25rem;
+            padding: 0.75rem;
             display: flex;
             flex-direction: column;
-            gap: 0.75rem;
+            gap: 0.5rem;
             box-shadow: var(--shadow-sm);
             transition: all 0.2s ease;
             position: relative;
             overflow: hidden;
+            border: 1px solid var(--border-color);
         }
 
         .pod-item::before {
@@ -472,17 +635,27 @@
             gap: 0.25rem;
         }
 
+        .pod-grid.list-view .pod-header {
+            flex-direction: row;
+            align-items: center;
+            gap: 1rem;
+        }
+
         .pod-name {
             font-weight: 600;
-            font-size: 1rem;
+            font-size: 0.875rem;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
 
         .pod-namespace {
-            font-size: 0.875rem;
+            font-size: 0.75rem;
             color: var(--text-secondary);
+        }
+
+        .pod-grid.list-view .pod-namespace {
+            margin-left: auto;
         }
 
         .pod-status-badge {
@@ -492,6 +665,10 @@
             border-radius: 1rem;
             font-weight: 500;
             margin-top: 0.25rem;
+        }
+
+        .pod-grid.list-view .pod-status-badge {
+            margin-top: 0;
         }
 
         .status-running .pod-status-badge { background-color: rgba(16, 185, 129, 0.1); color: var(--running); }
@@ -504,43 +681,68 @@
         .container-links {
             display: flex;
             flex-direction: column;
+            gap: 0.25rem;
+            margin-top: 0.25rem;
+        }
+
+        .pod-grid.list-view .container-links {
+            flex-direction: row;
+            flex-wrap: wrap;
             gap: 0.5rem;
-            margin-top: 0.5rem;
+            margin-top: 0;
         }
 
         .container-link {
             display: inline-flex;
             align-items: center;
+            justify-content: center;
             color: white;
             text-decoration: none;
-            padding: 0.5rem 0.75rem;
+            padding: 0.25rem 0.5rem;
             border-radius: var(--radius);
             font-size: 0.75rem;
             font-weight: 500;
             transition: background-color 0.2s;
             white-space: nowrap;
+            width: 2rem;
+            height: 2rem;
         }
 
-        .container-link:hover {
-            background-color: var(--primary-hover);
+        .download-link {
+            background-color: #0ea5e9; /* sky blue */
+        }
+
+        .download-link:hover {
+            background-color: #0284c7;
+        }
+
+        .stream-link {
+            background-color: #10b981; /* emerald green */
+        }
+
+        .stream-link:hover {
+            background-color: #059669;
         }
 
         .container-row {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin-bottom: 0.5rem;
-            display: inline-flex;
-            align-items: center;
+            margin-bottom: 0.25rem;
             background-color: var(--primary);
             color: white;
             text-decoration: none;
-            padding: 0.5rem 0.75rem;
+            padding: 0.25rem 0.5rem;
             border-radius: var(--radius);
             font-size: 0.75rem;
             font-weight: 500;
             transition: background-color 0.2s;
             white-space: nowrap;
+        }
+
+        .pod-grid.list-view .container-row {
+            margin-bottom: 0;
+            width: auto;
         }
 
         .button-group {
@@ -593,7 +795,7 @@
             font-size: 1.25rem;
             font-weight: 600;
         }
-        
+
         .pod-info {
             margin-left: 1rem;
             font-size: 0.875rem;
@@ -686,6 +888,192 @@
             color: var(--text-secondary);
         }
 
+        .controls-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        .filter-controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .filter-select {
+            padding: 0.5rem;
+            border-radius: var(--radius);
+            border: 1px solid var(--border-color);
+            background-color: var(--card-bg);
+            color: var(--text-primary);
+            min-width: 150px;
+        }
+
+        .status-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            justify-content: center;
+            margin-top: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .status-badge {
+            padding: 0.25rem 0.75rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .status-badge.filtered {
+            opacity: 0.5;
+        }
+
+        /* Table styling */
+        .table-container {
+            overflow-x: auto;
+            background: var(--card-bg);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-sm);
+            border: 1px solid var(--border-color);
+            position: relative;
+        }
+
+        /* Fix for status indicator alignment */
+        .pods-table {
+            border-collapse: separate;
+            border-spacing: 0;
+            width: 100%;
+            font-size: 0.875rem;
+        }
+
+        .pods-table th {
+            text-align: left;
+            padding: 0.75rem;
+            font-weight: 600;
+            border-bottom: 1px solid var(--border-color);
+            background-color: rgba(59, 130, 246, 0.05);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .pods-table td {
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid var(--border-color);
+            vertical-align: middle;
+        }
+
+        .pods-table .pod-name {
+            font-weight: 600;
+            padding-left: 0.5rem;
+        }
+
+        /* Table layout adjustments */
+        .pods-table {
+            table-layout: fixed;
+        }
+
+        /* Fix alignment with status indicator */
+        .pods-table th:first-child {
+            padding-left: 0.5rem;
+        }
+
+        .pods-table td.pod-name {
+            padding-left: 0.5rem;
+        }
+
+        .pod-row {
+            transition: background-color 0.2s;
+            position: relative;
+        }
+
+        .pod-row:hover {
+            background-color: rgba(59, 130, 246, 0.05);
+        }
+
+        .pod-row.new-pod {
+            border-top: 2px solid var(--border-color);
+            position: relative;
+        }
+
+        .pod-row:first-child {
+            border-top: none;
+        }
+
+        /* Fix for status indicator */
+        .pod-row:not(.new-pod) {
+            position: static;
+        }
+
+        /* Removed status indicator on the left */
+
+        .pod-row.new-pod {
+            border-top: 2px solid var(--border-color);
+        }
+
+        .pod-row:first-child {
+            border-top: none;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: flex-end;
+        }
+
+        .container-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem;
+            border-radius: var(--radius);
+            margin-bottom: 0.5rem;
+            background-color: rgba(59, 130, 246, 0.05);
+        }
+
+        .container-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .container-name-text {
+            font-weight: 500;
+        }
+
+        .container-list {
+            padding: 0.25rem 0;
+        }
+
+        .pod-status-badge {
+            display: inline-block;
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 1rem;
+            font-weight: 500;
+        }
+
+        .pod-status-badge.status-running { background-color: rgba(16, 185, 129, 0.1); color: var(--running); }
+        .pod-status-badge.status-pending { background-color: rgba(245, 158, 11, 0.1); color: var(--pending); }
+        .pod-status-badge.status-failed { background-color: rgba(239, 68, 68, 0.1); color: var(--failed); }
+        .pod-status-badge.status-unknown { background-color: rgba(107, 114, 128, 0.1); color: var(--unknown); }
+        .pod-status-badge.status-succeeded { background-color: rgba(6, 182, 212, 0.1); color: var(--succeeded); }
+        .pod-status-badge.status-terminated { background-color: rgba(75, 85, 99, 0.1); color: var(--terminated); }
+
+        .action-buttons {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: center;
+        }
+
         @media (max-width: 768px) {
             .label-container {
                 grid-template-columns: 1fr;
@@ -695,25 +1083,36 @@
                 grid-template-columns: 1fr;
             }
 
-            .status-badges {
+            .controls-row {
                 flex-direction: column;
                 align-items: flex-start;
+            }
+
+            .status-badges {
+                flex-direction: row;
+                flex-wrap: wrap;
+                margin-bottom: 1rem;
             }
 
             .log-modal-content {
                 width: 95%;
                 height: 90%;
             }
-            
+
             .header {
                 display: flex;
                 flex-direction: column;
             }
-            
+
             .search-container {
                 max-width: 100%;
                 margin-top: 1rem;
                 margin-left: 0;
+            }
+
+            .view-toggle {
+                width: 100%;
+                justify-content: flex-start;
             }
         }
     </style>
@@ -721,7 +1120,7 @@
 <body>
     <header class="header">
         <div class="header-content">
-            <h1>KLogs Viewer <span style="position: absolute;padding: 0.5rem 1rem;border-radius: 1rem;font-size: 0.65rem;vertical-align: top;">
+            <h1>KLogs Viewer <span style="position: absolute;padding: 0.25rem 0.5rem;border-radius: 1rem;font-size: 0.65rem;vertical-align: top;">
                 v{{.Version}}</span></h1>
             <p>Stream or download container logs directly from your browser. Select a container below to download its logs.</p>
         </div>
@@ -731,49 +1130,79 @@
         </div>
     </header>
 
-    <div class="status-badges">
-        <div class="status-badge running">Running</div>
-        <div class="status-badge pending">Pending</div>
-        <div class="status-badge failed">Failed</div>
-        <div class="status-badge unknown">Unknown</div>
-        <div class="status-badge succeeded">Succeeded</div>
-        <div class="status-badge terminated">Terminated</div>
+    <div class="controls-row">
+        <div class="filter-controls">
+            <div class="filter-group">
+                <label for="namespace-filter">Namespace:</label>
+                <select id="namespace-filter" class="filter-select">
+                    <option value="">All Namespaces</option>
+                    <!-- Will be populated via JavaScript -->
+                </select>
+            </div>
+            <div class="filter-group">
+                <label for="label-filter">Label:</label>
+                <select id="label-filter" class="filter-select">
+                    <option value="">All Labels</option>
+                    <!-- Will be populated via JavaScript -->
+                </select>
+            </div>
+        </div>
     </div>
 
-    <div class="label-container">
-    {{range $label, $pods := .Pods}}
-        <div class="label-section">
-            <div class="label-title">{{$label | CleanLabel}}</div>
-            {{if $pods}}
-            <div class="pod-grid">
-                {{range $pods}}
-                <div class="pod-item status-{{.Status | ToLower}}">
-                    <div class="pod-header">
-                        <div class="pod-name" title="{{.Name}}">{{.Name}}</div>
-                        <div class="pod-namespace">{{.Namespace}}</div>
-                        <span class="pod-status-badge">{{.Status}}</span>
-                    </div>
-                    <div class="container-links">
-                        {{range .Containers}}
-                        <div class="container-row">
-                            <span class="container-name">{{.Name}}</span>
-                            <div class="button-group">
-                                <a href="{{.LogLink}}" class="container-link" title="Download logs">⬇</a>
-                                <a href="{{.StreamLink}}" class="container-link stream-link" title="Stream logs">▶</a>
-                            </div>
-                        </div>
+    <div class="table-container">
+        <table class="pods-table">
+            <thead>
+                <tr>
+                    <th>Pod Name</th>
+                    <th>Namespace</th>
+                    <th>Status</th>
+                    <th>Label</th>
+                    <th>Containers & Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range $label, $pods := .Pods}}
+                    {{$lastPodName := ""}}
+                    {{range $pods}}
+                        {{$podName := .Name}}
+                        {{$namespace := .Namespace}}
+                        {{$status := .Status}}
+                        {{$statusLower := .Status | ToLower}}
+                        {{if ne $lastPodName $podName}}
+                            <tr class="pod-row status-{{$statusLower}} new-pod">
+                                <td class="pod-name" title="{{$podName}}">{{$podName}}</td>
+                                <td class="pod-namespace">{{$namespace}}</td>
+                                <td><span class="pod-status-badge status-{{$statusLower}}">{{$status}}</span></td>
+                                <td class="pod-label">{{$label | CleanLabel}}</td>
+                                <td class="container-list">
+                                    {{range .Containers}}
+                                    <div class="container-item">
+                                        <span class="container-name-text">{{.Name}}</span>
+                                        <div class="action-buttons">
+                                            <a href="{{.LogLink}}" class="container-link download-link" title="Download logs">⬇</a>
+                                            <a href="{{.StreamLink}}" class="container-link stream-link" title="Stream logs">▶</a>
+                                        </div>
+                                    </div>
+                                    {{end}}
+                                </td>
+                            </tr>
+                            {{$lastPodName = $podName}}
                         {{end}}
-                    </div>
-                </div>
+                    {{end}}
                 {{end}}
-            </div>
-            {{else}}
-            <div class="empty-state">No pods found for this label</div>
-            {{end}}
-        </div>
-    {{end}}
+            </tbody>
+        </table>
+        <div class="empty-state" style="display: none;">No pods found matching your search</div>
     </div>
     <footer style="text-align: center; margin-top: 2rem; color: var(--text-secondary);">
+        <div class="status-legend">
+            <div class="status-badge running" data-status="running">Running</div>
+            <div class="status-badge pending" data-status="pending">Pending</div>
+            <div class="status-badge failed" data-status="failed">Failed</div>
+            <div class="status-badge unknown" data-status="unknown">Unknown</div>
+            <div class="status-badge succeeded" data-status="succeeded">Succeeded</div>
+            <div class="status-badge terminated" data-status="terminated">Terminated</div>
+        </div>
     </footer>
 </body>
 </html>
