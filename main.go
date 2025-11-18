@@ -134,6 +134,7 @@ var labels string
 var namespace string
 var protected bool
 var replaceLabel string
+var basePath string
 
 // Rate limiting configuration
 var rateLimit float64
@@ -150,6 +151,10 @@ func init() {
 	namespace = os.Getenv("NAMESPACE")
 	replaceLabel = os.Getenv("REPLACE_LABEL")
 	allowedOrigins = os.Getenv("ALLOWED_ORIGINS")
+	basePath = os.Getenv("BASE_PATH")
+	if basePath == "" {
+		basePath = "/logs"
+	}
 
 	protected = len(validToken) > 0
 
@@ -240,7 +245,7 @@ func createLogLink(namespace, podName, containerName string, token string) strin
 	podName = url.PathEscape(podName)
 	containerName = url.PathEscape(containerName)
 
-	logLink := fmt.Sprintf("/logs/download/%s/%s/%s", namespace, podName, containerName)
+	logLink := fmt.Sprintf("%s/download/%s/%s/%s", basePath, namespace, podName, containerName)
 
 	if token != "" {
 		logLink += fmt.Sprintf("?t=%s", url.QueryEscape(token))
@@ -255,7 +260,7 @@ func createStreamLink(namespace, podName, containerName string, token string) st
 	podName = url.PathEscape(podName)
 	containerName = url.PathEscape(containerName)
 
-	streamLink := fmt.Sprintf("/logs/stream/%s/%s/%s", namespace, podName, containerName)
+	streamLink := fmt.Sprintf("%s/stream/%s/%s/%s", basePath, namespace, podName, containerName)
 
 	if token != "" {
 		streamLink += fmt.Sprintf("?t=%s", url.QueryEscape(token))
@@ -271,8 +276,8 @@ func (s *LogServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle both /logs and /logs/ paths consistently
-	if r.URL.Path != "/logs" && r.URL.Path != "/logs/" {
+	// Handle both basePath and basePath/ paths consistently
+	if r.URL.Path != basePath && r.URL.Path != basePath+"/" {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
@@ -312,7 +317,7 @@ func (s *LogServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !validateToken(token) {
-			log.Printf("Invalid token attempt from %s for /logs endpoint", clientIP)
+			log.Printf("Invalid token attempt from %s for %s endpoint", clientIP, basePath)
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
@@ -452,7 +457,7 @@ func (s *LogServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use safer URL path extraction with path.Clean to prevent path traversal
-	cleanPath := path.Clean(strings.TrimPrefix(r.URL.Path, "/logs/download/"))
+	cleanPath := path.Clean(strings.TrimPrefix(r.URL.Path, basePath+"/download/"))
 	parts := strings.Split(cleanPath, "/")
 	if len(parts) != 3 {
 		http.Error(w, "Invalid URL format", http.StatusBadRequest)
@@ -541,7 +546,7 @@ func (s *LogServer) handleStreamLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use safer URL path extraction with path.Clean to prevent path traversal
-	cleanPath := path.Clean(strings.TrimPrefix(r.URL.Path, "/logs/stream/"))
+	cleanPath := path.Clean(strings.TrimPrefix(r.URL.Path, basePath+"/stream/"))
 	parts := strings.Split(cleanPath, "/")
 	if len(parts) != 3 {
 		http.Error(w, "Invalid URL format", http.StatusBadRequest)
@@ -914,10 +919,10 @@ func main() {
 	}))
 
 	// Apply rate limiting and security checks to all endpoints
-	http.HandleFunc("/logs", server.rateLimit(server.handleIndex))
-	http.HandleFunc("/logs/", server.rateLimit(server.handleIndex))
-	http.HandleFunc("/logs/download/", server.rateLimit(server.handleLogs))
-	http.HandleFunc("/logs/stream/", server.rateLimit(server.handleStreamLogs))
+	http.HandleFunc(basePath, server.rateLimit(server.handleIndex))
+	http.HandleFunc(basePath+"/", server.rateLimit(server.handleIndex))
+	http.HandleFunc(basePath+"/download/", server.rateLimit(server.handleLogs))
+	http.HandleFunc(basePath+"/stream/", server.rateLimit(server.handleStreamLogs))
 
 	log.Printf("Server starting on: 8080")
 	log.Printf("Namespace: %s", namespace)

@@ -42,6 +42,7 @@ helm install klogs-viewer rogosprojects/klogs-viewer
 | `POD_LABELS` | Comma-separated list of pod label selectors | `app=*` |
 | `TOKEN` | Optional authentication token | (none) |
 | `REPLACE_LABEL` | Custom label replacement pattern | `app=` |
+| `BASE_PATH` | Base path for the application | `/logs` |
 
 #### Rate Limiting Configuration
 
